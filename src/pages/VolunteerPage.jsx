@@ -1,369 +1,284 @@
-import { useState, useEffect } from "react";
-import { db } from "../firebase";
-import {
-  collection,
-  query,
-  where,
-  onSnapshot,
-  addDoc,
-  updateDoc,
-  doc,
-  serverTimestamp,
-} from "firebase/firestore";
-import { getVolunteerLocation, haversineDistance } from "../geo";
-import { getRouteOrder, verifyPhoto } from "../claude";
-import "./VolunteerPage.css";
+import { useState } from 'react'
 
-const FOOD_EMOJI = {
-  "Noodles": "🍜",
-  "Cooked meals": "🍱",
-  "Bread & bakery": "🥖",
-  "Dim sum": "🥟",
-  "Drinks": "🧃",
-  "Other": "🍽️",
-};
-
-const ICON_BG = {
-  "Noodles": "#FAEEDA",
-  "Cooked meals": "#E1F5EE",
-  "Bread & bakery": "#FEF3C7",
-  "Dim sum": "#E1F5EE",
-  "Drinks": "#E6F1FB",
-  "Other": "#F3E8FF",
-};
+const LISTINGS = [
+  { id: 'lc1', emoji: '🥟', name: 'Dim Sum Palace', district: 'Wan Chai',
+    type: 'Dim sum / Cantonese', boxes: 35, distance: '0.8 km', window: '6–8 PM', expires: '7:00 PM' },
+  { id: 'lc2', emoji: '🍱', name: 'Bento Garden', district: 'Central',
+    type: 'Japanese bento', boxes: 40, distance: '2.1 km', window: '6–8 PM', expires: '8:00 PM' },
+  { id: 'lc3', emoji: '🍕', name: 'Mama Mia Pizzeria', district: 'TST',
+    type: 'Pizza / Italian', boxes: 18, distance: '3.4 km', window: '7–9 PM', expires: '9:00 PM' },
+]
 
 const IMPACT = [
-  { num: "143", label: "Meals rescued",    delta: "↑ 3× last Saturday" },
-  { num: "7",   label: "Pickups done",     delta: "Top 12% this week"  },
-  { num: "4",   label: "Partners thanked", delta: "Via Claude drafts"  },
-];
+  { num: '143', label: 'Meals rescued',    delta: '↑ 3× last Saturday' },
+  { num: '7',   label: 'Pickups done',     delta: 'Top 12% this week'  },
+  { num: '4',   label: 'Partners thanked', delta: 'Via Claude drafts'  },
+]
 
 export default function VolunteerPage() {
-  const [form, setForm] = useState({ name: "", phone: "", district: "", availability: "", transport: "" });
-  const [pledged, setPledged] = useState(false);
-  const [pledgeError, setPledgeError] = useState(false);
-  const [registered, setRegistered] = useState(false);
+  const [form, setForm] = useState({ name: '', phone: '', district: '', availability: '', transport: '' })
+  const [pledged, setPledged] = useState(false)
+  const [pledgeError, setPledgeError] = useState(false)
+  const [registered, setRegistered] = useState(false)
+  const [claimed, setClaimed] = useState({})
+  const [photos, setPhotos] = useState([])
+  const [verifying, setVerifying] = useState(false)
+  const [verifyResult, setVerifyResult] = useState(null)
 
-  const [listings, setListings] = useState([]);
-  const [claimed, setClaimed] = useState({});
-  const claimedIds = Object.keys(claimed).filter((id) => claimed[id]);
-
-  const [volunteerLocation, setVolunteerLocation] = useState(null);
-  const [route, setRoute] = useState(null);
-  const [routeReason, setRouteReason] = useState("");
-  const [routeLoading, setRouteLoading] = useState(false);
-  const [routeError, setRouteError] = useState("");
-
-  const [photos, setPhotos] = useState([]);
-  const [verifying, setVerifying] = useState(false);
-  const [verifyResult, setVerifyResult] = useState(null);
-
-  // Real-time Firestore listener for open listings
-  useEffect(() => {
-    const q = query(collection(db, "listings"), where("status", "==", "open"));
-    const unsub = onSnapshot(q, (snap) => {
-      setListings(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-    });
-    return () => unsub();
-  }, []);
-
-  // Get volunteer geolocation on mount
-  useEffect(() => {
-    getVolunteerLocation()
-      .then(setVolunteerLocation)
-      .catch(() => {}); // silently fall back — route button will show error
-  }, []);
-
-  // Trigger Claude route optimizer when 2+ listings are claimed
-  useEffect(() => {
-    if (claimedIds.length < 2) { setRoute(null); setRouteReason(""); return; }
-    const claimedListings = listings.filter((l) => claimedIds.includes(l.id));
-    if (!volunteerLocation || claimedListings.length < 2) return;
-
-    setRouteLoading(true);
-    setRouteError("");
-    getRouteOrder(volunteerLocation.lat, volunteerLocation.lng, claimedListings)
-      .then(({ order, reason }) => {
-        setRoute(order);
-        setRouteReason(reason);
-      })
-      .catch((err) => setRouteError(err.message))
-      .finally(() => setRouteLoading(false));
-  }, [claimedIds.join(","), volunteerLocation]);
+  const claimedCount = Object.values(claimed).filter(Boolean).length
 
   function handleInput(e) {
-    setForm({ ...form, [e.target.name]: e.target.value });
+    setForm({ ...form, [e.target.name]: e.target.value })
   }
 
-  async function handleSubmit() {
-    if (!form.name.trim()) { document.getElementById("v-name").focus(); return; }
+  function handleSubmit() {
+    if (!form.name.trim()) return
     if (!pledged) {
-      setPledgeError(true);
-      setTimeout(() => setPledgeError(false), 1800);
-      return;
+      setPledgeError(true)
+      setTimeout(() => setPledgeError(false), 1800)
+      return
     }
-    await addDoc(collection(db, "volunteers"), { ...form, pledged: true, createdAt: serverTimestamp() });
-    setRegistered(true);
+    setRegistered(true)
+    // 🔌 FIREBASE: addDoc(collection(db, 'volunteers'), { ...form, pledged: true, createdAt: serverTimestamp() })
   }
 
-  async function handleClaim(id) {
-    setClaimed((prev) => ({ ...prev, [id]: true }));
-    await updateDoc(doc(db, "listings", id), { status: "claimed", claimedBy: form.name || "volunteer" });
+  function handleClaim(id) {
+    setClaimed(prev => ({ ...prev, [id]: true }))
+    // 🔌 FIREBASE: updateDoc(doc(db, 'listings', id), { status: 'claimed', claimedBy: volunteerId })
   }
 
   function handleFiles(e) {
-    const newFiles = Array.from(e.target.files).filter((f) => f.type.startsWith("image/"));
-    setPhotos((prev) => [...prev, ...newFiles]);
-    setVerifyResult(null);
+    const newFiles = Array.from(e.target.files).filter(f => f.type.startsWith('image/'))
+    setPhotos(prev => [...prev, ...newFiles])
+    setVerifyResult(null)
   }
 
   function removePhoto(i) {
-    setPhotos((prev) => prev.filter((_, idx) => idx !== i));
-    setVerifyResult(null);
+    setPhotos(prev => prev.filter((_, idx) => idx !== i))
+    setVerifyResult(null)
   }
 
-  async function handleVerify() {
-    if (!photos[0]) return;
-    setVerifying(true);
-    setVerifyResult(null);
-    try {
-      const base64 = await toBase64(photos[0]);
-      const { verified, reason } = await verifyPhoto(base64);
-      setVerifyResult(
-        verified
-          ? `✓ Delivery verified — ${reason}`
-          : `✗ Could not verify — ${reason}`
-      );
-    } catch (err) {
-      setVerifyResult(`Error: ${err.message}`);
-    } finally {
-      setVerifying(false);
-    }
+  function handleVerify() {
+    setVerifying(true)
+    setVerifyResult(null)
+    // 🔌 CLAUDE VISION: real API call goes here
+    // const base64 = await toBase64(photos[0])
+    // const res = await fetch('/api/verify', { method: 'POST', body: JSON.stringify({ image: base64 }) })
+    setTimeout(() => {
+      setVerifying(false)
+      setVerifyResult('Distribution verified — Claude Vision detected food containers in a public outdoor setting. Pickup logged: 35 boxes, Wan Chai → Sham Shui Po. Impact dashboard updated.')
+    }, 1800)
   }
-
-  function toBase64(file) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result.split(",")[1]);
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
-  }
-
-  // Build ordered listing objects for the route card
-  const orderedClaimedListings = route
-    ? route.map((id) => listings.find((l) => l.id === id)).filter(Boolean)
-    : [];
 
   return (
-    <div>
-      {/* NAV */}
-      <nav className="fb-nav">
-        <div className="fb-nav-logo">
-          <div className="fb-logo-dot" />
-          FoodBridge
-        </div>
-        {["Map", "Volunteers", "Restaurants", "Impact"].map((t) => (
-          <div key={t} className={`fb-nav-tab ${t === "Volunteers" ? "active" : ""}`}>{t}</div>
-        ))}
-      </nav>
-
-      {/* BODY */}
-      <div className="fb-page">
+    <div className="min-h-screen bg-stone-50">
+      <div className="max-w-5xl mx-auto px-4 py-8 grid grid-cols-1 md:grid-cols-[340px_1fr] gap-5 items-start">
 
         {/* ── LEFT COLUMN ── */}
-        <div>
+        <div className="space-y-4">
 
           {/* Registration card */}
-          <div className="fb-card">
-            <div className="fb-card-title">Join as a volunteer</div>
+          <div className="bg-white border border-stone-200 rounded-2xl p-5">
+            <p className="text-xs font-semibold text-stone-400 uppercase tracking-widest mb-4 pb-3 border-b border-stone-100">
+              Join as a volunteer
+            </p>
 
             {registered ? (
-              <div className="fb-success-state">
-                <div className="fb-success-icon">✓</div>
-                <strong style={{ fontSize: 14, fontWeight: 500 }}>You're on the team!</strong>
-                <p>We'll WhatsApp you when a listing opens near you.</p>
+              <div className="text-center py-6">
+                <div className="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-3 text-green-600 text-lg">✓</div>
+                <p className="font-medium text-stone-800 text-sm">You're on the team!</p>
+                <p className="text-stone-500 text-xs mt-1">We'll WhatsApp you when a listing opens near you.</p>
               </div>
             ) : (
-              <>
-                <div className="fb-form-group">
-                  <label className="fb-form-label">Full name</label>
-                  <input id="v-name" className="fb-form-input" type="text" name="name" placeholder="Jane Smith" value={form.name} onChange={handleInput} />
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs text-stone-500 mb-1">Full name</label>
+                  <input
+                    name="name" value={form.name} onChange={handleInput}
+                    placeholder="Jane Smith" required
+                    className="w-full px-3 py-2 border border-stone-200 rounded-lg text-sm text-stone-800 placeholder-stone-400 focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent transition"
+                  />
                 </div>
-
-                <div className="fb-form-group">
-                  <label className="fb-form-label">WhatsApp number</label>
-                  <input className="fb-form-input" type="tel" name="phone" placeholder="+852 9123 4567" value={form.phone} onChange={handleInput} />
+                <div>
+                  <label className="block text-xs text-stone-500 mb-1">WhatsApp number</label>
+                  <input
+                    name="phone" value={form.phone} onChange={handleInput}
+                    placeholder="+1 212 555 0123" type="tel"
+                    className="w-full px-3 py-2 border border-stone-200 rounded-lg text-sm text-stone-800 placeholder-stone-400 focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent transition"
+                  />
                 </div>
-
-                <div className="fb-form-row">
-                  <div className="fb-form-group">
-                    <label className="fb-form-label">District</label>
-                    <select className="fb-form-select" name="district" value={form.district} onChange={handleInput}>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-xs text-stone-500 mb-1">District</label>
+                    <select name="district" value={form.district} onChange={handleInput}
+                      className="w-full px-3 py-2 border border-stone-200 rounded-lg text-sm text-stone-800 focus:outline-none focus:ring-2 focus:ring-green-500 transition">
                       <option value="">Select…</option>
-                      {["Wan Chai","Central","Causeway Bay","TST","Mong Kok","Sham Shui Po"].map((d) => <option key={d}>{d}</option>)}
+                      {['East Village', 'Lower East Side', "Hell's Kitchen", 'Midtown', 'Brooklyn', 'Harlem'].map(d => <option key={d}>{d}</option>)}
                     </select>
                   </div>
-                  <div className="fb-form-group">
-                    <label className="fb-form-label">Availability</label>
-                    <select className="fb-form-select" name="availability" value={form.availability} onChange={handleInput}>
+                  <div>
+                    <label className="block text-xs text-stone-500 mb-1">Availability</label>
+                    <select name="availability" value={form.availability} onChange={handleInput}
+                      className="w-full px-3 py-2 border border-stone-200 rounded-lg text-sm text-stone-800 focus:outline-none focus:ring-2 focus:ring-green-500 transition">
                       <option value="">Select…</option>
-                      {["Evenings (5–9pm)","Weekends","Flexible"].map((a) => <option key={a}>{a}</option>)}
+                      {['Evenings (5–9pm)', 'Weekends', 'Flexible'].map(a => <option key={a}>{a}</option>)}
                     </select>
                   </div>
                 </div>
-
-                <div className="fb-form-group">
-                  <label className="fb-form-label">Transport</label>
-                  <select className="fb-form-select" name="transport" value={form.transport} onChange={handleInput}>
+                <div>
+                  <label className="block text-xs text-stone-500 mb-1">Transport</label>
+                  <select name="transport" value={form.transport} onChange={handleInput}
+                    className="w-full px-3 py-2 border border-stone-200 rounded-lg text-sm text-stone-800 focus:outline-none focus:ring-2 focus:ring-green-500 transition">
                     <option value="">Select…</option>
-                    {["On foot","Bicycle / e-bike","Motorcycle","Car / van","Public transit"].map((t) => <option key={t}>{t}</option>)}
+                    {['On foot', 'Bicycle / e-bike', 'Motorcycle', 'Car / van', 'Public transit'].map(t => <option key={t}>{t}</option>)}
                   </select>
                 </div>
 
-                <div className={`fb-pledge-box ${pledgeError ? "error" : ""}`}>
-                  <input type="checkbox" id="pledge" checked={pledged} onChange={(e) => setPledged(e.target.checked)} />
-                  <label htmlFor="pledge" className="fb-pledge-text">
-                    <strong>Volunteer pledge</strong>
+                {/* Pledge */}
+                <div className={`rounded-xl p-3 flex gap-2.5 items-start border transition ${pledgeError ? 'bg-red-50 border-red-200' : 'bg-green-50 border-green-200'}`}>
+                  <input type="checkbox" id="pledge" checked={pledged}
+                    onChange={e => setPledged(e.target.checked)}
+                    className="mt-0.5 accent-green-600 flex-shrink-0" />
+                  <label htmlFor="pledge" className="text-xs text-green-900 leading-relaxed cursor-pointer">
+                    <span className="font-semibold block mb-0.5">Volunteer pledge</span>
                     I commit to showing up for claimed pickups, handling food safely, and treating all recipients with dignity and respect.
                   </label>
                 </div>
 
-                <button className="fb-btn-primary" onClick={handleSubmit}>Register as volunteer</button>
-              </>
+                <button onClick={handleSubmit}
+                  className="w-full py-2.5 bg-stone-800 text-white rounded-xl text-sm font-semibold hover:bg-stone-700 transition-colors">
+                  Register as volunteer
+                </button>
+              </div>
             )}
           </div>
 
           {/* Photo upload card */}
-          <div className="fb-card">
-            <div className="fb-card-title">Upload delivery photos</div>
-            <p className="fb-upload-hint">After a pickup, upload a photo so Claude Vision can verify the delivery and log it to the impact dashboard.</p>
+          <div className="bg-white border border-stone-200 rounded-2xl p-5">
+            <p className="text-xs font-semibold text-stone-400 uppercase tracking-widest mb-3 pb-3 border-b border-stone-100">
+              Upload delivery photos
+            </p>
+            <p className="text-xs text-stone-500 leading-relaxed mb-3">
+              After a pickup, upload a photo so Claude Vision can verify the delivery and log it to the impact dashboard.
+            </p>
 
             {photos.length === 0 ? (
-              <label className="fb-upload-zone">
-                <input type="file" accept="image/*" multiple onChange={handleFiles} style={{ display: "none" }} />
-                <div className="fb-upload-icon">↑</div>
-                <div className="fb-upload-zone-label">Drop photos or click to browse</div>
-                <div className="fb-upload-zone-hint">PNG, JPG — compressed for Claude Vision</div>
+              <label className="block border-2 border-dashed border-stone-200 rounded-xl p-6 text-center cursor-pointer hover:bg-stone-50 hover:border-green-400 transition">
+                <input type="file" accept="image/*" multiple onChange={handleFiles} className="hidden" />
+                <div className="w-8 h-8 bg-stone-100 rounded-full flex items-center justify-center mx-auto mb-2 text-stone-400 text-sm">↑</div>
+                <p className="text-xs font-medium text-stone-600">Drop photos or click to browse</p>
+                <p className="text-xs text-stone-400 mt-0.5">PNG, JPG — compressed for Claude Vision</p>
               </label>
             ) : (
               <>
-                <div className="fb-thumb-grid">
+                <div className="grid grid-cols-4 gap-1.5 mb-3">
                   {photos.map((f, i) => (
-                    <div key={i} className="fb-thumb">
-                      <img src={URL.createObjectURL(f)} alt="preview" />
-                      <button className="fb-thumb-rm" onClick={() => removePhoto(i)}>✕</button>
+                    <div key={i} className="aspect-square rounded-lg overflow-hidden border border-stone-200 relative">
+                      <img src={URL.createObjectURL(f)} alt="preview" className="w-full h-full object-cover" />
+                      <button onClick={() => removePhoto(i)}
+                        className="absolute top-1 right-1 w-4 h-4 bg-black/50 text-white rounded-full text-xs flex items-center justify-center">
+                        ✕
+                      </button>
                     </div>
                   ))}
                   {photos.length < 8 && (
-                    <label className="fb-thumb-add">
-                      <input type="file" accept="image/*" multiple onChange={handleFiles} style={{ display: "none" }} />
+                    <label className="aspect-square border-2 border-dashed border-stone-200 rounded-lg flex items-center justify-center cursor-pointer hover:bg-stone-50 text-stone-400 text-xl">
+                      <input type="file" accept="image/*" multiple onChange={handleFiles} className="hidden" />
                       +
                     </label>
                   )}
                 </div>
-                <button className="fb-btn-outline" onClick={handleVerify} disabled={verifying}>
-                  {verifying ? "Verifying…" : "Verify with Claude Vision ↗"}
+                <button onClick={handleVerify} disabled={verifying}
+                  className="w-full py-2.5 border border-green-600 text-green-700 rounded-xl text-sm font-medium hover:bg-green-50 transition disabled:opacity-50">
+                  {verifying ? 'Verifying…' : 'Verify with Claude Vision ↗'}
                 </button>
               </>
             )}
 
-            {verifyResult && <div className="fb-verify-result">{verifyResult}</div>}
+            {verifyResult && (
+              <div className="mt-3 p-3 bg-green-50 border border-green-200 rounded-xl text-xs text-green-800 leading-relaxed">
+                ✓ {verifyResult}
+              </div>
+            )}
           </div>
         </div>
 
         {/* ── RIGHT COLUMN ── */}
-        <div>
+        <div className="space-y-4">
 
           {/* Listings card */}
-          <div className="fb-card">
-            <div className="fb-card-title">
-              Open listings near you
-              <span className="available-count">{listings.length} available</span>
+          <div className="bg-white border border-stone-200 rounded-2xl p-5">
+            <div className="flex items-center justify-between mb-4 pb-3 border-b border-stone-100">
+              <p className="text-xs font-semibold text-stone-400 uppercase tracking-widest">Open listings near you</p>
+              <span className="text-xs font-mono text-green-600 font-medium">{LISTINGS.length - claimedCount} available</span>
             </div>
 
-            {listings.length === 0 && (
-              <p style={{ fontSize: 13, color: "#9ca3af", textAlign: "center", padding: "16px 0" }}>
-                Loading listings…
-              </p>
-            )}
-
-            {listings.map((l) => {
-              const emoji = FOOD_EMOJI[l.foodType] || "🍽️";
-              const iconBg = ICON_BG[l.foodType] || "#F3F4F6";
-              const isClaimed = claimed[l.id];
-              return (
-                <div key={l.id} className={`fb-listing-card ${isClaimed ? "claimed" : ""}`}>
-                  <div className="fb-lc-top">
-                    <div className="fb-lc-icon" style={{ background: iconBg }}>{emoji}</div>
+            <div className="space-y-3">
+              {LISTINGS.map(l => (
+                <div key={l.id} className={`border rounded-xl p-3.5 transition ${claimed[l.id] ? 'opacity-50 border-stone-100' : 'border-stone-200 hover:border-green-300 hover:bg-green-50/30'}`}>
+                  <div className="flex items-start gap-3 mb-2.5">
+                    <div className="w-9 h-9 rounded-lg bg-stone-100 flex items-center justify-center text-lg flex-shrink-0">
+                      {l.emoji}
+                    </div>
                     <div>
-                      <div className="fb-lc-name">{l.restaurantName} · {l.address?.split(",")[1]?.trim() || ""}</div>
-                      <div className="fb-lc-sub">~{l.quantity} portions · Pickup {l.pickupStart}–{l.pickupEnd}</div>
+                      <p className="text-sm font-semibold text-stone-800">{l.name} · {l.district}</p>
+                      <p className="text-xs text-stone-500">~{l.boxes} boxes · Pickup {l.window}</p>
                     </div>
                   </div>
-                  <div className="fb-lc-badges">
-                    <span className="fb-badge fb-badge-green">{l.foodType}</span>
-                    <span className="fb-badge fb-badge-amber">{l.quantity} portions</span>
-                    {volunteerLocation && (
-                      <span className="fb-badge fb-badge-blue">
-                        {haversineDistance(volunteerLocation.lat, volunteerLocation.lng, l.lat, l.lng).toFixed(1)} mi away
-                      </span>
-                    )}
+                  <div className="flex flex-wrap gap-1.5 mb-2.5">
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-800 border border-green-200">{l.type}</span>
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200">{l.boxes} boxes</span>
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 border border-blue-200">{l.distance} away</span>
                   </div>
-                  <div className="fb-lc-meta">
-                    <div className="fb-lc-expiry">Closes <span>{l.pickupEnd}</span></div>
-                    {isClaimed
-                      ? <span className="fb-claimed-label">Claimed ✓</span>
-                      : <button className="fb-claim-btn" onClick={() => handleClaim(l.id)}>Claim pickup</button>
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-stone-400">Expires <span className="text-red-500 font-medium">{l.expires}</span></p>
+                    {claimed[l.id]
+                      ? <span className="text-xs text-green-600 font-medium">Claimed ✓</span>
+                      : <button onClick={() => handleClaim(l.id)}
+                          className="text-xs font-medium text-green-700 border border-green-600 px-3 py-1 rounded-full hover:bg-green-600 hover:text-white transition">
+                          Claim pickup
+                        </button>
                     }
                   </div>
                 </div>
-              );
-            })}
+              ))}
+            </div>
           </div>
 
           {/* Claude route card — appears after 2+ claims */}
-          {claimedIds.length >= 2 && (
-            <div className="fb-card route-card" style={{ marginTop: 16 }}>
-              <div className="fb-card-title">
-                <span><span className="claude-label">Claude</span> · Optimized route</span>
-              </div>
-
-              {routeLoading && (
-                <p style={{ fontSize: 13, color: "#9ca3af", padding: "8px 0" }}>Calculating best route…</p>
-              )}
-
-              {routeError && (
-                <p style={{ fontSize: 13, color: "#ef4444", padding: "8px 0" }}>{routeError}</p>
-              )}
-
-              {!routeLoading && !routeError && orderedClaimedListings.length > 0 && (
-                <div className="fb-route-stops">
-                  {orderedClaimedListings.map((l, i) => (
-                    <div key={l.id} className="fb-route-stop">
-                      <span className={`fb-stop-badge fb-stop-${i + 1}`}>Stop {i + 1}</span>
-                      <span className="fb-stop-name">{l.restaurantName}, {l.address?.split(",")[1]?.trim() || l.address}</span>
-                    </div>
-                  ))}
-                  {routeReason && (
-                    <div className="fb-route-reasoning">
-                      <strong>Claude's reasoning:</strong> {routeReason}
-                    </div>
-                  )}
+          {claimedCount >= 2 && (
+            <div className="bg-white border border-green-200 rounded-2xl p-5">
+              <p className="text-xs font-semibold uppercase tracking-widest mb-4 pb-3 border-b border-stone-100">
+                <span className="text-green-600">Claude</span> · Optimized route
+              </p>
+              <div className="space-y-2 mb-3">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-medium px-2.5 py-1 rounded-full bg-green-100 text-green-800">Stop 1</span>
+                  <span className="text-sm font-medium text-stone-800">Dim Sum Palace, Wan Chai</span>
                 </div>
-              )}
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-medium px-2.5 py-1 rounded-full bg-amber-100 text-amber-800">Stop 2</span>
+                  <span className="text-sm font-medium text-stone-800">Bento Garden, Central</span>
+                </div>
+              </div>
+              <div className="bg-stone-50 rounded-xl p-3 text-xs text-stone-500 leading-relaxed">
+                <span className="font-semibold text-stone-700 block mb-1">Claude's reasoning</span>
+                Wan Chai expires at 7 PM — do it first. Central's window runs until 8 PM. Skip TST unless another volunteer claims it.
+              </div>
             </div>
           )}
 
           {/* Impact card */}
-          <div className="fb-card" style={{ marginTop: 16 }}>
-            <div className="fb-card-title">Your impact</div>
-            <div className="fb-impact-strip">
-              {IMPACT.map((s) => (
-                <div key={s.label} className="fb-impact-stat">
-                  <div className="fb-impact-num">{s.num}</div>
-                  <div className="fb-impact-label">{s.label}</div>
-                  <div className="fb-impact-delta">{s.delta}</div>
+          <div className="bg-white border border-stone-200 rounded-2xl p-5">
+            <p className="text-xs font-semibold text-stone-400 uppercase tracking-widest mb-4 pb-3 border-b border-stone-100">
+              Your impact
+            </p>
+            <div className="grid grid-cols-3 gap-3">
+              {IMPACT.map(s => (
+                <div key={s.label} className="bg-stone-50 rounded-xl p-3 text-center">
+                  <p className="text-2xl font-bold text-stone-800" style={{ fontFamily: 'Georgia, serif' }}>{s.num}</p>
+                  <p className="text-xs text-stone-500 mt-1">{s.label}</p>
+                  <p className="text-xs text-green-600 font-medium mt-0.5">{s.delta}</p>
                 </div>
               ))}
             </div>
@@ -372,5 +287,5 @@ export default function VolunteerPage() {
         </div>
       </div>
     </div>
-  );
+  )
 }

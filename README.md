@@ -30,10 +30,10 @@ Inspired by a Hong Kong teenager who spent her own money buying meal boxes to ha
 
 ## Team
 
-- Alex Chen
-- Jordan Kim
-- Sam Rivera
-- Taylor Wong
+- Harini Dave
+- Angela Koo
+- Suzy Zeng
+- Lyudmila Kaneva
 
 ---
 

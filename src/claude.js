@@ -1,28 +1,55 @@
+import { haversineDistance } from './geo.js'
+
 export async function getRouteOrder(volunteerLat, volunteerLng, listings) {
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": import.meta.env.VITE_ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-        "anthropic-dangerous-direct-browser-access": "true",
-      },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 1000,
-        messages: [
-          {
-            role: "user",
-            content: `You are a food rescue coordinator. A volunteer is at coordinates ${volunteerLat}, ${volunteerLng}. Here are the open food listings: ${JSON.stringify(listings)}. Return a JSON array of listing IDs in the optimal pickup order, prioritizing listings expiring soonest. Include a one-sentence reason for the top pick. Format: { "order": ["id1","id2",...], "reason": "..." }`
-          }
-        ]
-      })
+  const enriched = listings
+    .filter(l => l.status === 'open')
+    .map(l => ({
+      id: l.id,
+      restaurantName: l.restaurantName,
+      foodType: l.foodType,
+      quantity: l.quantity,
+      pickupEnd: l.pickupEnd,
+      distanceMiles: parseFloat(haversineDistance(volunteerLat, volunteerLng, l.lat, l.lng).toFixed(2)),
+    }))
+
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": import.meta.env.VITE_ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-5",
+      max_tokens: 512,
+      messages: [
+        {
+          role: "user",
+          content: `You are a food rescue coordinator optimizing a volunteer's pickup route.
+
+Volunteer location: ${volunteerLat}, ${volunteerLng}
+Open listings (each includes distanceMiles from volunteer and pickupEnd time):
+${JSON.stringify(enriched, null, 2)}
+
+Return the optimal pickup order balancing two factors:
+1. Urgency — listings with earlier pickupEnd expire sooner and should be prioritized
+2. Efficiency — minimize total travel distance when expiry times are similar (within 30 min)
+
+Respond with JSON only, no markdown:
+{ "order": ["id1", "id2", ...], "reason": "One sentence explaining the top pick." }`
+        }
+      ]
     })
-    const data = await response.json()
-    const text = data.content[0].text
-    return JSON.parse(text)
-  }
-  
+  })
+
+  const data = await response.json()
+  if (data.error) throw new Error(data.error.message)
+  const text = data.content[0].text
+  const clean = text.replace(/```json\n?|\n?```/g, '').trim()
+  return JSON.parse(clean)
+}
+
   export async function verifyPhoto(base64Image) {
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",

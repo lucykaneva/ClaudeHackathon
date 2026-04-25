@@ -5,9 +5,8 @@ import { useEffect, useRef, useState } from 'react'
 // import 'mapbox-gl/dist/mapbox-gl.css'
 // mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_TOKEN
 
-// 🔌 FIREBASE — Person A wires real-time listener:
-// import { db } from '../firebase'
-// import { collection, query, onSnapshot, doc, updateDoc } from 'firebase/firestore'
+import { db } from '../firebase'
+import { collection, query, onSnapshot, doc, updateDoc } from 'firebase/firestore'
 
 const SEED_LISTINGS = [
   { id: '1', restaurantName: "Xi'an Famous Foods", address: '81 St Marks Pl, East Village',
@@ -42,12 +41,12 @@ export default function MapPage() {
   const [selected, setSelected] = useState(null)
 
   useEffect(() => {
-    // 🔌 FIREBASE real-time listener — swap SEED_LISTINGS when ready:
-    // const q = query(collection(db, 'listings'))
-    // const unsub = onSnapshot(q, snap => {
-    //   setListings(snap.docs.map(d => ({ id: d.id, ...d.data() })))
-    // })
-    // return () => unsub()
+    const q = query(collection(db, 'listings'))
+    const unsub = onSnapshot(q, snap => {
+      const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+      setListings(docs.length > 0 ? docs : SEED_LISTINGS)
+    })
+    return () => unsub()
   }, [])
 
   useEffect(() => {
@@ -76,9 +75,7 @@ export default function MapPage() {
   }, [listings])
 
   const handleClaim = async (id) => {
-    // 🔌 FIREBASE update — swap when ready:
-    // await updateDoc(doc(db, 'listings', id), { status: 'claimed', claimedBy: 'volunteer-id' })
-    setListings(prev => prev.map(l => l.id === id ? { ...l, status: 'claimed' } : l))
+    await updateDoc(doc(db, 'listings', id), { status: 'claimed', claimedBy: 'volunteer-id' })
     setSelected(prev => prev ? { ...prev, status: 'claimed' } : null)
   }
 

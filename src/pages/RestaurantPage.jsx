@@ -1,4 +1,6 @@
 import { useState } from 'react'
+import { db } from '../firebase'
+import { collection, addDoc, serverTimestamp } from 'firebase/firestore'
 
 const FOOD_TYPES = [
   { id: 'cooked', label: 'Cooked meals', emoji: '🍱' },
@@ -27,21 +29,18 @@ export default function RestaurantPage() {
 
   const handleSubmit = async (e) => {
     e.preventDefault()
-    // 🔌 FIREBASE HOOK — Person A wires this in:
-    // import { db } from '../firebase'
-    // import { collection, addDoc, serverTimestamp } from 'firebase/firestore'
-    // await addDoc(collection(db, 'listings'), {
-    //   ...form,
-    //   foodType: selectedFood,
-    //   status: 'open',
-    //   lat: 0, // swap with geocoded lat from Google Places
-    //   lng: 0, // swap with geocoded lng from Google Places
-    //   claimedBy: null,
-    //   photoUrl: null,
-    //   aiVerified: null,
-    //   createdAt: serverTimestamp(),
-    // })
-    console.log('Submitting:', { ...form, foodType: selectedFood })
+    await addDoc(collection(db, 'listings'), {
+      ...form,
+      quantity: Number(form.quantity),
+      foodType: FOOD_TYPES.find(t => t.id === selectedFood)?.label || selectedFood,
+      status: 'open',
+      lat: 0,
+      lng: 0,
+      claimedBy: null,
+      photoUrl: null,
+      aiVerified: null,
+      createdAt: serverTimestamp(),
+    })
     setSubmitted(true)
   }
 

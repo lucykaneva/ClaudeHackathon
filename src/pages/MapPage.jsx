@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 
-// 🔌 MAPBOX — uncomment when token is in .env:
-// import mapboxgl from 'mapbox-gl'
-// import 'mapbox-gl/dist/mapbox-gl.css'
-// mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_TOKEN
+import mapboxgl from 'mapbox-gl'
+import 'mapbox-gl/dist/mapbox-gl.css'
+mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_TOKEN
 
 import { db } from '../firebase'
 import { collection, query, onSnapshot, doc, updateDoc } from 'firebase/firestore'
@@ -50,28 +49,29 @@ export default function MapPage() {
   }, [])
 
   useEffect(() => {
-    // 🔌 MAPBOX init — uncomment when token ready:
-    // if (mapRef.current) return
-    // mapRef.current = new mapboxgl.Map({
-    //   container: mapContainer.current,
-    //   style: 'mapbox://styles/mapbox/light-v11',
-    //   center: [-74.006, 40.7128],
-    //   zoom: 12,
-    // })
+    if (mapRef.current) return
+    mapRef.current = new mapboxgl.Map({
+      container: mapContainer.current,
+      style: 'mapbox://styles/mapbox/light-v11',
+      center: [-74.006, 40.7128],
+      zoom: 12,
+    })
   }, [])
 
   useEffect(() => {
-    // 🔌 MAPBOX pins — uncomment when map is ready:
-    // markersRef.current.forEach(m => m.remove())
-    // markersRef.current = listings.map(listing => {
-    //   const { color } = getPinStyle(listing.status, listing.pickupEnd)
-    //   const el = document.createElement('div')
-    //   el.style.cssText = `width:14px;height:14px;border-radius:50%;background:${color};border:2px solid white;box-shadow:0 2px 6px rgba(0,0,0,.3);cursor:pointer`
-    //   el.addEventListener('click', () => setSelected(listing))
-    //   return new mapboxgl.Marker({ element: el })
-    //     .setLngLat([listing.lng, listing.lat])
-    //     .addTo(mapRef.current)
-    // })
+    if (!mapRef.current) return
+    markersRef.current.forEach(m => m.remove())
+    markersRef.current = listings
+      .filter(l => l.lat && l.lng)
+      .map(listing => {
+        const { color } = getPinStyle(listing.status, listing.pickupEnd)
+        const el = document.createElement('div')
+        el.style.cssText = `width:14px;height:14px;border-radius:50%;background:${color};border:2px solid white;box-shadow:0 2px 6px rgba(0,0,0,.3);cursor:pointer`
+        el.addEventListener('click', () => setSelected(listing))
+        return new mapboxgl.Marker({ element: el })
+          .setLngLat([listing.lng, listing.lat])
+          .addTo(mapRef.current)
+      })
   }, [listings])
 
   const handleClaim = async (id) => {
@@ -83,27 +83,7 @@ export default function MapPage() {
     <div style={{ height: 'calc(100vh - 56px)' }} className="flex">
       {/* Map */}
       <div className="flex-1 relative bg-stone-100">
-        {/* 🔌 MAPBOX: replace placeholder with: <div ref={mapContainer} className="absolute inset-0" /> */}
-        <div className="absolute inset-0 flex flex-col items-center justify-center">
-          <div className="text-4xl mb-3">🗺️</div>
-          <p className="text-stone-500 text-sm font-medium">Mapbox loads here</p>
-          <p className="text-stone-400 text-xs mt-1">Add VITE_MAPBOX_TOKEN to .env</p>
-          <div className="mt-6 flex gap-2 flex-wrap justify-center max-w-sm">
-            {listings.map(l => {
-              const { bg } = getPinStyle(l.status, l.pickupEnd)
-              return (
-                <button
-                  key={l.id}
-                  onClick={() => setSelected(l)}
-                  className={`${bg} text-white text-xs font-medium px-3 py-1.5 rounded-full shadow hover:opacity-90 transition`}
-                >
-                  {l.restaurantName}
-                </button>
-              )
-            })}
-          </div>
-          <p className="text-stone-400 text-xs mt-3">Click a pin to preview the sidebar</p>
-        </div>
+        <div ref={mapContainer} className="absolute inset-0" />
 
         {/* Legend */}
         <div className="absolute bottom-4 left-4 bg-white rounded-xl shadow border border-stone-200 px-4 py-3 text-xs space-y-1.5 z-10">

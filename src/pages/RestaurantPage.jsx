@@ -154,8 +154,7 @@ export default function RestaurantPage() {
   }, [restaurant?.id])
 
   function handleRegInput(e) {
-    const { name, value } = e.target
-    setRegForm(prev => ({ ...prev, [name]: name === 'ein' ? formatEIN(value) : value }))
+    setRegForm(prev => ({ ...prev, [e.target.name]: e.target.value }))
   }
 
   async function handleRegSubmit(e) {
@@ -164,10 +163,13 @@ export default function RestaurantPage() {
     try {
       const { lat, lng } = await geocode(regForm.address)
       const docRef = await addDoc(collection(db, 'restaurants'), {
-        ...regForm, lat, lng, createdAt: serverTimestamp(),
+        ...regForm,
+        ein: formatEIN(regForm.ein),
+        lat, lng, createdAt: serverTimestamp(),
       })
+      const formattedEIN = formatEIN(regForm.ein)
       localStorage.setItem('fb_restaurant_id', docRef.id)
-      setRestaurant({ id: docRef.id, ...regForm, lat, lng })
+      setRestaurant({ id: docRef.id, ...regForm, ein: formattedEIN, lat, lng })
       setView('dashboard')
     } finally {
       setRegSubmitting(false)
@@ -496,7 +498,7 @@ export default function RestaurantPage() {
                         <p className="text-xs text-green-600 font-medium mt-0.5">AI Verified ✓</p>
                       )}
                     </div>
-                    {l.status === 'completed' && (
+                    {(l.status === 'completed' || l.status === 'claimed') && l.dropOffName && (
                       <button
                         onClick={() => printReceipt(restaurant, l)}
                         className="flex-shrink-0 text-xs font-medium text-stone-600 border border-stone-200 px-3 py-1.5 rounded-lg hover:bg-stone-50 transition whitespace-nowrap">

@@ -140,6 +140,13 @@ export default function VolunteerPage() {
     setClaimed(prev => ({ ...prev, [listing.id]: true }))
   }
 
+  async function handleMarkDelivered(listingId) {
+    await updateDoc(doc(db, 'listings', listingId), {
+      status: 'completed',
+      completedAt: serverTimestamp(),
+    })
+  }
+
   function handleFiles(e) {
     const newFiles = Array.from(e.target.files).filter(f => f.type.startsWith('image/'))
     setPhotos(prev => [...prev, ...newFiles])
@@ -442,6 +449,12 @@ export default function VolunteerPage() {
                             >Open in Maps ↗</a>
                           </div>
                         </div>
+                        <button
+                          onClick={() => handleMarkDelivered(l.id)}
+                          className="w-full mt-1 py-2 bg-green-600 text-white rounded-lg text-xs font-semibold hover:bg-green-700 transition-colors"
+                        >
+                          Mark as delivered ✓
+                        </button>
                       </div>
                     )}
                   </div>

@@ -1,8 +1,29 @@
-# React + Vite
+# ClaudeHackathon
+# FoodBridge
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+> Connecting restaurants with surplus food to community volunteers delivering meals to homeless individuals.
 
-Currently, two official plugins are available:
+## Inspiration
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react/README.md) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+## What It Does
+
+## Tech Stack
+
+## Getting Started
+### Prerequisites
+### Installation
+### Environment Variables
+
+## Usage
+### For Restaurants
+### For Volunteers
+
+## Architecture
+
+## Challenges
+
+## What's Next
+
+## Team
+
+## License

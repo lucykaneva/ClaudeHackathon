@@ -49,29 +49,29 @@ Respond with JSON only, no markdown:
   return JSON.parse(clean)
 }
 
-  export async function verifyPhoto(base64Image) {
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": import.meta.env.VITE_ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-        "anthropic-dangerous-direct-browser-access": "true",
-      },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-6",
-        max_tokens: 1000,
-        messages: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "image",
-                source: { type: "base64", media_type: "image/jpeg", data: base64Image }
-              },
-              {
-                type: "text",
-                text: `This photo was submitted by a food rescue volunteer as proof of delivery. Does it plausibly show food being distributed in a communal or public setting?
+export async function verifyPhoto(base64Image) {
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": import.meta.env.VITE_ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-6",
+      max_tokens: 1000,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "image",
+              source: { type: "base64", media_type: "image/jpeg", data: base64Image }
+            },
+            {
+              type: "text",
+              text: `This photo was submitted by a food rescue volunteer as proof of delivery. Does it plausibly show food being distributed in a communal or public setting?
 
 Respond with JSON only:
 {
@@ -81,15 +81,15 @@ Respond with JSON only:
 }
 verified: true if the photo plausibly shows food distribution.
 flagged: true if the image appears fraudulent, irrelevant, or deliberately misleading (e.g. blank wall, stock photo, repeated submission).`
-              }
-            ]
-          }
-        ]
-      })
+            }
+          ]
+        }
+      ]
     })
-    const data = await response.json()
-    if (data.error) throw new Error(data.error.message)
-    const text = data.content[0].text
-    const clean = text.replace(/```json\n?|\n?```/g, '').trim()
-    return JSON.parse(clean)
-  }
+  })
+  const data = await response.json()
+  if (data.error) throw new Error(data.error.message)
+  const text = data.content[0].text
+  const clean = text.replace(/```json\n?|\n?```/g, '').trim()
+  return JSON.parse(clean)
+}

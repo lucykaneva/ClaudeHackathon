@@ -125,7 +125,6 @@ export default function VolunteerPage() {
 
   async function handleClaim(listing) {
     const shelter = assignNearestShelter(listing)
-    setClaimed(prev => ({ ...prev, [listing.id]: true }))
     await updateDoc(doc(db, 'listings', listing.id), {
       status: 'claimed',
       claimedBy: form.name || 'volunteer',
@@ -138,6 +137,7 @@ export default function VolunteerPage() {
       dropOffLng: shelter.lng,
       dropOffEIN: shelter.ein,
     })
+    setClaimed(prev => ({ ...prev, [listing.id]: true }))
   }
 
   function handleFiles(e) {

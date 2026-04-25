@@ -116,6 +116,12 @@ export default function MapPage() {
   }, [listings])
 
   useEffect(() => {
+    if (!selected) return
+    const updated = listings.find(l => l.id === selected.id)
+    if (updated && updated.status !== selected.status) setSelected(updated)
+  }, [listings])
+
+  useEffect(() => {
     if (!selected || !mapRef.current || !selected.lat || !selected.lng) return
     mapRef.current.flyTo({ center: [selected.lng, selected.lat], zoom: 15, duration: 800 })
   }, [selected])

@@ -1,42 +1,68 @@
-#root {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 2rem;
-  text-align: center;
+:root {
+  --color-primary: #4A7C59;
+  --color-primary-light: #7FAF8A;
+  --color-primary-lighter: #C8DEC9;
+  --color-background: #F5F5F2;
+  --color-surface: #EDEEE8;
+  --color-text-primary: #1C2B20;
+  --color-text-secondary: #6B7D6F;
+  --color-border: #D4D9D1;
+  --color-success: #3D6B4F;
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 12px;
 }
 
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: filter 300ms;
-}
-.logo:hover {
-  filter: drop-shadow(0 0 2em #646cffaa);
-}
-.logo.react:hover {
-  filter: drop-shadow(0 0 2em #61dafbaa);
+body {
+  background: var(--color-background);
+  color: var(--color-text-primary);
+  font-family: 'Inter', sans-serif;
+  font-weight: 400;
+  margin: 0;
 }
 
-@keyframes logo-spin {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
+button.primary {
+  background: var(--color-primary);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-md);
+  padding: 8px 18px;
+  font-size: 13px;
+  cursor: pointer;
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  a:nth-of-type(2) .logo {
-    animation: logo-spin infinite 20s linear;
-  }
+button.secondary {
+  background: transparent;
+  color: var(--color-primary);
+  border: 0.5px solid var(--color-primary);
+  border-radius: var(--radius-md);
+  padding: 8px 18px;
+  font-size: 13px;
+  cursor: pointer;
 }
 
 .card {
-  padding: 2em;
+  background: var(--color-surface);
+  border: 0.5px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: 20px;
 }
 
-.read-the-docs {
-  color: #888;
+.label {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
+
+.badge-available {
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: var(--radius-sm);
+}
+
+.badge-claimed {
+  background: var(--c

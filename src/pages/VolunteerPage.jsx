@@ -5,7 +5,14 @@ import { ref, uploadBytes, getDownloadURL } from 'firebase/storage'
 import { getVolunteerLocation, haversineDistance, assignNearestShelter } from '../geo'
 import { getRouteOrder, verifyPhoto } from '../claude'
 
-const FOOD_EMOJI = { 'Noodles':'🍜', 'Cooked meals':'🍱', 'Bread & bakery':'🥖', 'Dim sum':'🥟', 'Drinks':'🧃' }
+const FOOD_TYPES = [
+  { id: 'Noodles',        emoji: '🍜' },
+  { id: 'Cooked meals',   emoji: '🍱' },
+  { id: 'Bread & bakery', emoji: '🥖' },
+  { id: 'Dim sum',        emoji: '🥟' },
+  { id: 'Drinks',         emoji: '🧃' },
+  { id: 'Other',          emoji: '🍽️' },
+]
 
 const TRANSPORT_SPEEDS_MPH = {
   'On foot': 3,
@@ -13,12 +20,6 @@ const TRANSPORT_SPEEDS_MPH = {
   'Motorcycle': 20,
   'Car / van': 20,
   'Public transit': 10,
-}
-
-function estimateMinutes(distMi, transport) {
-  const speed = TRANSPORT_SPEEDS_MPH[transport]
-  if (!speed || !distMi) return null
-  return Math.round((distMi / speed) * 60)
 }
 
 const BOROUGH_COORDS = {
@@ -36,9 +37,24 @@ function formatTime(val) {
   return String(val)
 }
 
+function estimateMinutes(distMi, transport) {
+  const speed = TRANSPORT_SPEEDS_MPH[transport]
+  if (!speed || !distMi) return null
+  return Math.round((distMi / speed) * 60)
+}
+
+function toBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result.split(',')[1])
+    reader.onerror = reject
+    reader.readAsDataURL(file)
+  })
+}
+
 export default function VolunteerPage() {
   const [form, setForm] = useState({ name: '', phone: '', transport: '' })
-  const [locStatus, setLocStatus] = useState('idle') // idle | loading | found | error
+  const [locStatus, setLocStatus] = useState('idle')
   const [pledged, setPledged] = useState(false)
   const [pledgeError, setPledgeError] = useState(false)
   const [registered, setRegistered] = useState(false)
@@ -52,9 +68,10 @@ export default function VolunteerPage() {
   const [routeLoading, setRouteLoading] = useState(false)
   const [routeError, setRouteError] = useState('')
 
-  const [photos, setPhotos] = useState([])
-  const [verifying, setVerifying] = useState(false)
-  const [verifyResult, setVerifyResult] = useState(null)
+  // Per-listing photo state
+  const [listingPhotos, setListingPhotos] = useState({})     // { id: File[] }
+  const [verifyingId, setVerifyingId] = useState(null)
+  const [listingResults, setListingResults] = useState({})   // { id: { ok, text, photoUrl, submitted } }
 
   const [flagCount, setFlagCount] = useState(0)
   const FLAG_THRESHOLD = 3
@@ -62,7 +79,6 @@ export default function VolunteerPage() {
 
   const sessionClaimedListings = listings.filter(l => claimed[l.id] && l.status === 'claimed')
   const sessionClaimedIds = sessionClaimedListings.map(l => l.id)
-  const verifyTarget = sessionClaimedListings.at(-1) || null
 
   const sortedListings = volunteerLocation
     ? [...listings].sort((a, b) => {
@@ -74,6 +90,10 @@ export default function VolunteerPage() {
              - haversineDistance(volunteerLocation.lat, volunteerLocation.lng, b.lat, b.lng)
       })
     : listings
+
+  const orderedClaimedListings = route
+    ? route.map(id => sessionClaimedListings.find(l => l.id === id)).filter(Boolean)
+    : sessionClaimedListings
 
   useEffect(() => {
     const q = query(collection(db, 'listings'), orderBy('createdAt', 'desc'))
@@ -113,10 +133,7 @@ export default function VolunteerPage() {
     const borough = e.target.value
     if (!borough) return
     const coords = BOROUGH_COORDS[borough]
-    if (coords) {
-      setVolunteerLocation(coords)
-      setLocStatus('found')
-    }
+    if (coords) { setVolunteerLocation(coords); setLocStatus('found') }
   }
 
   async function handleSubmit() {
@@ -129,6 +146,7 @@ export default function VolunteerPage() {
     await addDoc(collection(db, 'volunteers'), {
       name: form.name,
       phone: form.phone,
+      transport: form.transport,
       lat: volunteerLocation?.lat ?? null,
       lng: volunteerLocation?.lng ?? null,
       pledged: true,
@@ -154,28 +172,19 @@ export default function VolunteerPage() {
     setClaimed(prev => ({ ...prev, [listing.id]: true }))
   }
 
-  async function handleMarkDelivered(listingId) {
-    await updateDoc(doc(db, 'listings', listingId), {
-      status: 'completed',
-      completedAt: serverTimestamp(),
-    })
+  function handleListingFiles(id, e) {
+    const files = Array.from(e.target.files).filter(f => f.type.startsWith('image/'))
+    setListingPhotos(prev => ({ ...prev, [id]: [...(prev[id] || []), ...files] }))
   }
 
-  function handleFiles(e) {
-    const newFiles = Array.from(e.target.files).filter(f => f.type.startsWith('image/'))
-    setPhotos(prev => [...prev, ...newFiles])
-    setVerifyResult(null)
+  function removeListingPhoto(id, i) {
+    setListingPhotos(prev => ({ ...prev, [id]: (prev[id] || []).filter((_, idx) => idx !== i) }))
   }
 
-  function removePhoto(i) {
-    setPhotos(prev => prev.filter((_, idx) => idx !== i))
-    setVerifyResult(null)
-  }
-
-  async function handleVerify() {
-    if (!photos[0]) return
-    setVerifying(true)
-    setVerifyResult(null)
+  async function handleVerifyAndSubmit(listing) {
+    const photos = listingPhotos[listing.id]
+    if (!photos?.[0]) return
+    setVerifyingId(listing.id)
     try {
       const storageRef = ref(storage, `deliveries/${Date.now()}_${photos[0].name}`)
       await uploadBytes(storageRef, photos[0])
@@ -186,63 +195,50 @@ export default function VolunteerPage() {
 
       if (flagged) setFlagCount(prev => prev + 1)
 
-      if (verifyTarget) {
-        await updateDoc(doc(db, 'listings', verifyTarget.id), {
-          status: 'completed',
-          photoUrl,
-          aiVerified: verified,
-          aiFlagged: flagged ?? false,
-          aiReason: reason,
-          completedAt: serverTimestamp(),
-        })
-      }
-
-      setVerifyResult({
-        ok: verified,
-        text: verified ? `Delivery verified — ${reason}` : `Could not verify — ${reason}`,
-      })
+      setListingResults(prev => ({
+        ...prev,
+        [listing.id]: { ok: verified, text: verified ? `Verified — ${reason}` : `Not verified — ${reason}`, photoUrl, submitted: true },
+      }))
     } catch (err) {
-      setVerifyResult({ ok: false, text: `Error: ${err.message}` })
+      setListingResults(prev => ({
+        ...prev,
+        [listing.id]: { ok: false, text: `Error: ${err.message}`, submitted: true },
+      }))
     } finally {
-      setVerifying(false)
+      setVerifyingId(null)
     }
   }
 
-  function toBase64(file) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader()
-      reader.onload = () => resolve(reader.result.split(',')[1])
-      reader.onerror = reject
-      reader.readAsDataURL(file)
+  async function handleMarkDelivered(listing) {
+    const result = listingResults[listing.id]
+    await updateDoc(doc(db, 'listings', listing.id), {
+      status: 'completed',
+      photoUrl: result?.photoUrl ?? null,
+      aiVerified: result?.ok ?? false,
+      completedAt: serverTimestamp(),
     })
   }
 
-  const orderedClaimedListings = route
-    ? route.map(id => sessionClaimedListings.find(l => l.id === id)).filter(Boolean)
-    : sessionClaimedListings
-
   const inputClass = 'w-full px-3 py-2 border border-stone-200 rounded-lg text-sm text-stone-800 placeholder-stone-400 focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent transition'
 
-  return (
-    <div className="min-h-screen bg-stone-50">
-      <div className="max-w-5xl mx-auto px-4 py-8 grid grid-cols-1 md:grid-cols-[340px_1fr] gap-5 items-start">
+  // ── PRE-REGISTRATION: single centered form ──
+  if (!registered) {
+    return (
+      <div className="min-h-screen bg-stone-50 flex items-start justify-center px-4 py-12">
+        <div className="w-full max-w-md">
+          <div className="mb-6">
+            <p className="text-xs font-semibold text-green-600 uppercase tracking-widest mb-1">Volunteer portal</p>
+            <h1 className="text-2xl font-bold text-stone-800" style={{ fontFamily: 'Georgia, serif' }}>Join as a volunteer</h1>
+            <p className="text-stone-500 text-sm mt-1">Takes 60 seconds. Start claiming pickups right away.</p>
+          </div>
 
-        {/* LEFT COLUMN */}
-        <div className="space-y-4">
+          <div className="bg-white border border-stone-200 rounded-2xl p-6 space-y-5">
 
-          {/* Registration card */}
-          <div className="bg-white border border-stone-200 rounded-2xl p-5">
-            <p className="text-xs font-semibold text-stone-400 uppercase tracking-widest mb-4 pb-3 border-b border-stone-100">
-              Join as a volunteer
-            </p>
-
-            {registered ? (
-              <div className="text-center py-6">
-                <div className="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-3 text-green-600 text-lg">✓</div>
-                <p className="font-medium text-stone-800 text-sm">You're on the team!</p>
-                <p className="text-stone-500 text-xs mt-1">We'll WhatsApp you when a listing opens near you.</p>
-              </div>
-            ) : (
+            {/* Personal info */}
+            <div>
+              <p className="text-xs font-semibold text-stone-400 uppercase tracking-widest mb-3 pb-2 border-b border-stone-100">
+                Your info
+              </p>
               <div className="space-y-3">
                 <div>
                   <label className="block text-xs text-stone-500 mb-1">Full name</label>
@@ -252,7 +248,6 @@ export default function VolunteerPage() {
                   <label className="block text-xs text-stone-500 mb-1">WhatsApp number</label>
                   <input name="phone" value={form.phone} onChange={handleInput} placeholder="+1 212 555 0123" type="tel" className={inputClass} />
                 </div>
-
                 <div>
                   <label className="block text-xs text-stone-500 mb-1">Transport</label>
                   <select name="transport" value={form.transport} onChange={handleInput} className={inputClass}>
@@ -260,26 +255,21 @@ export default function VolunteerPage() {
                     {Object.keys(TRANSPORT_SPEEDS_MPH).map(t => <option key={t}>{t}</option>)}
                   </select>
                 </div>
-
                 <div>
-                  <label className="block text-xs text-stone-500 mb-1.5">Your location</label>
+                  <label className="block text-xs text-stone-500 mb-1">Your location</label>
                   <button
                     type="button"
                     onClick={handleGetLocation}
                     disabled={locStatus === 'loading'}
                     className={`w-full py-2 rounded-lg text-sm font-medium border transition flex items-center justify-center gap-2 ${
-                      locStatus === 'found'
-                        ? 'bg-green-50 border-green-300 text-green-700'
-                        : 'bg-stone-50 border-stone-200 text-stone-600 hover:bg-stone-100'
+                      locStatus === 'found' ? 'bg-green-50 border-green-300 text-green-700' : 'bg-stone-50 border-stone-200 text-stone-600 hover:bg-stone-100'
                     }`}
                   >
                     {locStatus === 'loading' ? 'Getting location…' : locStatus === 'found' ? '📍 Location found' : '📍 Use my location'}
                   </button>
                   {(locStatus === 'error' || locStatus === 'idle') && (
                     <>
-                      {locStatus === 'error' && (
-                        <p className="text-xs text-stone-400 mt-1.5">GPS unavailable. Select your borough:</p>
-                      )}
+                      {locStatus === 'error' && <p className="text-xs text-stone-400 mt-1.5">GPS unavailable. Select your borough:</p>}
                       <select onChange={handleBoroughFallback} defaultValue="" className={`${inputClass} mt-1.5`}>
                         <option value="">Borough fallback…</option>
                         {Object.keys(BOROUGH_COORDS).map(b => <option key={b}>{b}</option>)}
@@ -287,222 +277,54 @@ export default function VolunteerPage() {
                     </>
                   )}
                 </div>
-
-                <div className={`rounded-xl p-3 flex gap-2.5 items-start border transition ${pledgeError ? 'bg-red-50 border-red-200' : 'bg-green-50 border-green-200'}`}>
-                  <input type="checkbox" id="pledge" checked={pledged} onChange={e => setPledged(e.target.checked)} className="mt-0.5 accent-green-600 flex-shrink-0" />
-                  <label htmlFor="pledge" className="text-xs text-green-900 leading-relaxed cursor-pointer">
-                    <span className="font-semibold block mb-0.5">Volunteer pledge</span>
-                    I commit to showing up for claimed pickups, handling food safely, and treating all recipients with dignity and respect.
-                  </label>
-                </div>
-
-                <button onClick={handleSubmit} className="w-full py-2.5 bg-stone-800 text-white rounded-xl text-sm font-semibold hover:bg-stone-700 transition-colors">
-                  Register as volunteer
-                </button>
               </div>
-            )}
-          </div>
+            </div>
 
-          {/* Photo upload card */}
-          <div className="bg-white border border-stone-200 rounded-2xl p-5">
-            <p className="text-xs font-semibold text-stone-400 uppercase tracking-widest mb-3 pb-3 border-b border-stone-100">
-              Upload delivery photos
-            </p>
-
-            {verifyTarget && (
-              <div className="text-xs text-stone-500 bg-stone-50 rounded-lg px-3 py-2 mb-3 border border-stone-100 leading-relaxed">
-                Verifying for: <span className="font-semibold text-stone-700">{verifyTarget.restaurantName}</span>
-                {verifyTarget.dropOffName && (
-                  <> → <span className="font-semibold text-stone-700">{verifyTarget.dropOffName}</span></>
-                )}
-              </div>
-            )}
-
-            {photos.length === 0 ? (
-              <label className="block border-2 border-dashed border-stone-200 rounded-xl p-6 text-center cursor-pointer hover:bg-stone-50 hover:border-green-400 transition">
-                <input type="file" accept="image/*" multiple onChange={handleFiles} className="hidden" />
-                <div className="w-8 h-8 bg-stone-100 rounded-full flex items-center justify-center mx-auto mb-2 text-stone-400 text-sm">↑</div>
-                <p className="text-xs font-medium text-stone-600">Drop photos or click to browse</p>
-                <p className="text-xs text-stone-400 mt-0.5">PNG, JPG — compressed for Claude Vision</p>
+            {/* Pledge */}
+            <div className={`rounded-xl p-3 flex gap-2.5 items-start border transition ${pledgeError ? 'bg-red-50 border-red-200' : 'bg-green-50 border-green-200'}`}>
+              <input type="checkbox" id="pledge" checked={pledged} onChange={e => setPledged(e.target.checked)} className="mt-0.5 accent-green-600 flex-shrink-0" />
+              <label htmlFor="pledge" className="text-xs text-green-900 leading-relaxed cursor-pointer">
+                <span className="font-semibold block mb-0.5">Volunteer pledge</span>
+                I commit to showing up for claimed pickups, handling food safely, and treating all recipients with dignity and respect.
               </label>
-            ) : (
-              <>
-                <div className="grid grid-cols-4 gap-1.5 mb-3">
-                  {photos.map((f, i) => (
-                    <div key={i} className="aspect-square rounded-lg overflow-hidden border border-stone-200 relative">
-                      <img src={URL.createObjectURL(f)} alt="preview" className="w-full h-full object-cover" />
-                      <button onClick={() => removePhoto(i)} className="absolute top-1 right-1 w-4 h-4 bg-black/50 text-white rounded-full text-xs flex items-center justify-center">✕</button>
-                    </div>
-                  ))}
-                  {photos.length < 8 && (
-                    <label className="aspect-square border-2 border-dashed border-stone-200 rounded-lg flex items-center justify-center cursor-pointer hover:bg-stone-50 text-stone-400 text-xl">
-                      <input type="file" accept="image/*" multiple onChange={handleFiles} className="hidden" />
-                      +
-                    </label>
-                  )}
-                </div>
-                <button onClick={handleVerify} disabled={verifying}
-                  className="w-full py-2.5 border border-green-600 text-green-700 rounded-xl text-sm font-medium hover:bg-green-50 transition disabled:opacity-50">
-                  {verifying ? 'Uploading & verifying…' : 'Verify with Claude Vision ↗'}
-                </button>
-              </>
-            )}
+            </div>
 
-            {verifyResult && (
-              <div className={`mt-3 p-3 rounded-xl text-xs leading-relaxed border ${verifyResult.ok ? 'bg-green-50 border-green-200 text-green-800' : 'bg-red-50 border-red-200 text-red-800'}`}>
-                {verifyResult.ok ? '✓' : '✗'} {verifyResult.text}
-              </div>
-            )}
+            <button onClick={handleSubmit} className="w-full py-3 bg-stone-800 text-white rounded-xl text-sm font-semibold hover:bg-stone-700 transition-colors">
+              Become a volunteer →
+            </button>
           </div>
         </div>
+      </div>
+    )
+  }
 
-        {/* RIGHT COLUMN */}
+  // ── POST-REGISTRATION: two-column dashboard ──
+  return (
+    <div className="min-h-screen bg-stone-50">
+      <div className="max-w-5xl mx-auto px-4 py-8 grid grid-cols-1 md:grid-cols-[300px_1fr] gap-5 items-start">
+
+        {/* LEFT COLUMN */}
         <div className="space-y-4">
 
-          {/* Listings card */}
+          {/* Volunteer card */}
           <div className="bg-white border border-stone-200 rounded-2xl p-5">
-            <div className="flex items-center justify-between mb-4 pb-3 border-b border-stone-100">
-              <p className="text-xs font-semibold text-stone-400 uppercase tracking-widest">Open listings near you</p>
-              <span className="text-xs text-green-600 font-medium">
-                {listings.filter(l => l.status === 'open').length} available
-              </span>
-            </div>
-
-            {isLocked && (
-              <div className="mb-3 p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-800 font-medium">
-                Account locked — {FLAG_THRESHOLD} failed verifications. Contact support to appeal.
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center text-green-600 text-lg flex-shrink-0">✓</div>
+              <div>
+                <p className="font-semibold text-stone-800 text-sm">{form.name}</p>
+                <p className="text-xs text-stone-400">{form.transport || 'Volunteer'}</p>
               </div>
-            )}
-            {!isLocked && flagCount > 0 && (
-              <div className="mb-3 p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-800">
-                Warning: {flagCount}/{FLAG_THRESHOLD} verification failures. Account locks at {FLAG_THRESHOLD}.
-              </div>
-            )}
-
-            {listings.length === 0 && (
-              <p className="text-xs text-stone-400 text-center py-4">Loading listings…</p>
-            )}
-
-            <div className="space-y-3">
-              {sortedListings.map(l => {
-                const isMyClaim = !!claimed[l.id]
-                const isClaimed = l.status === 'claimed'
-                const isCompleted = l.status === 'completed'
-                const distMi = volunteerLocation && l.lat && l.lng
-                  ? haversineDistance(volunteerLocation.lat, volunteerLocation.lng, l.lat, l.lng)
-                  : null
-
-                return (
-                  <div key={l.id} className={`border rounded-xl p-3.5 transition ${
-                    isCompleted ? 'opacity-50 border-stone-100' :
-                    isClaimed && !isMyClaim ? 'opacity-50 border-stone-100' :
-                    isMyClaim ? 'border-green-300 bg-green-50/30' :
-                    'border-stone-200 hover:border-green-300 hover:bg-green-50/30'
-                  }`}>
-                    <div className="flex items-start gap-3 mb-2.5">
-                      <div className="w-9 h-9 rounded-lg bg-stone-100 flex items-center justify-center text-lg flex-shrink-0">
-                        {FOOD_EMOJI[l.foodType] || '🍽️'}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-semibold text-stone-800 truncate">{l.restaurantName}</p>
-                        <p className="text-xs text-stone-500 truncate">{l.address}</p>
-                      </div>
-                      {isCompleted && (
-                        <span className={`flex-shrink-0 text-[10px] font-semibold px-2 py-0.5 rounded-full border ${l.aiVerified ? 'bg-green-100 text-green-800 border-green-300' : 'bg-stone-100 text-stone-500 border-stone-200'}`}>
-                          {l.aiVerified ? 'AI Verified ✓' : 'Completed'}
-                        </span>
-                      )}
-                    </div>
-
-                    <div className="flex flex-wrap gap-1.5 mb-2.5">
-                      <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-800 border border-green-200">{l.foodType}</span>
-                      <span className="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200">{l.quantity} portions</span>
-                      {distMi !== null && (
-                        <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 border border-blue-200">
-                          {distMi.toFixed(1)} mi
-                        </span>
-                      )}
-                      {(() => {
-                        const mins = estimateMinutes(distMi, form.transport)
-                        return mins !== null ? (
-                          <span className="text-xs px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 border border-purple-200">
-                            ~{mins} min
-                          </span>
-                        ) : null
-                      })()}
-                    </div>
-
-                    <div className="flex items-center justify-between">
-                      <p className="text-xs text-stone-400">
-                        Pickup <span className="text-stone-600">{formatTime(l.pickupStart)}–{formatTime(l.pickupEnd)}</span>
-                      </p>
-                      {isCompleted
-                        ? <span className="text-xs font-medium text-stone-400">Completed ✓</span>
-                        : isClaimed && !isMyClaim
-                          ? <span className="text-xs font-medium text-stone-400">Claimed</span>
-                          : isMyClaim
-                            ? <span className="text-xs font-medium text-green-600">Claimed by you ✓</span>
-                            : isLocked
-                              ? <span className="text-xs font-medium text-red-400">Account locked</span>
-                              : (
-                                <button onClick={() => handleClaim(l)}
-                                  className="text-xs font-medium text-green-700 border border-green-600 px-3 py-1 rounded-full hover:bg-green-600 hover:text-white transition">
-                                  Claim pickup
-                                </button>
-                              )
-                      }
-                    </div>
-
-                    {/* Expanded info for volunteer's own claimed listings */}
-                    {isMyClaim && l.dropOffName && (
-                      <div className="mt-2.5 pt-2.5 border-t border-stone-100 space-y-2">
-                        <div className="flex items-start gap-2">
-                          <span className="text-[11px] text-stone-400 w-14 flex-shrink-0 pt-0.5">Pick up</span>
-                          <div className="flex-1 min-w-0">
-                            <p className="text-xs text-stone-700 leading-snug">{l.address}</p>
-                            <a
-                              href={`https://maps.google.com/?q=${encodeURIComponent(l.address)}`}
-                              target="_blank" rel="noopener noreferrer"
-                              className="text-[11px] text-green-600 hover:underline"
-                            >Open in Maps ↗</a>
-                          </div>
-                        </div>
-                        <div className="flex items-start gap-2">
-                          <span className="text-[11px] text-stone-400 w-14 flex-shrink-0 pt-0.5">Drop off</span>
-                          <div className="flex-1 min-w-0">
-                            <p className="text-xs font-medium text-stone-700">{l.dropOffName}</p>
-                            <p className="text-xs text-stone-500 leading-snug">{l.dropOffAddress}</p>
-                            <a
-                              href={`https://maps.google.com/?q=${encodeURIComponent(l.dropOffAddress)}`}
-                              target="_blank" rel="noopener noreferrer"
-                              className="text-[11px] text-green-600 hover:underline"
-                            >Open in Maps ↗</a>
-                          </div>
-                        </div>
-                        <button
-                          onClick={() => handleMarkDelivered(l.id)}
-                          className="w-full mt-1 py-2 bg-green-600 text-white rounded-lg text-xs font-semibold hover:bg-green-700 transition-colors"
-                        >
-                          Mark as delivered ✓
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                )
-              })}
             </div>
           </div>
 
-          {/* Claude route card — appears after 2+ session claims */}
+          {/* Claude route card */}
           {sessionClaimedIds.length >= 2 && (
             <div className="bg-white border border-green-200 rounded-2xl p-5">
               <p className="text-xs font-semibold uppercase tracking-widest mb-4 pb-3 border-b border-stone-100">
                 <span className="text-green-600">Claude</span> · Optimized route
               </p>
-
               {routeLoading && <p className="text-xs text-stone-400 py-2">Calculating best route…</p>}
               {routeError && <p className="text-xs text-red-400 py-2">{routeError}</p>}
-
               {!routeLoading && !routeError && orderedClaimedListings.length > 0 && (
                 <div className="space-y-2">
                   {orderedClaimedListings.map((l, i) => (
@@ -510,7 +332,7 @@ export default function VolunteerPage() {
                       <span className={`text-xs font-medium px-2.5 py-1 rounded-full flex-shrink-0 ${i === 0 ? 'bg-green-100 text-green-800' : i === 1 ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-800'}`}>
                         Stop {i + 1}
                       </span>
-                      <span className="text-sm font-medium text-stone-800 truncate">{l.restaurantName}, {l.address?.split(',')[1]?.trim() || l.address}</span>
+                      <span className="text-sm font-medium text-stone-800 truncate">{l.restaurantName}</span>
                     </div>
                   ))}
                   {routeReason && (
@@ -526,24 +348,189 @@ export default function VolunteerPage() {
 
           {/* Impact card */}
           <div className="bg-white border border-stone-200 rounded-2xl p-5">
-            <p className="text-xs font-semibold text-stone-400 uppercase tracking-widest mb-4 pb-3 border-b border-stone-100">
-              Your impact
-            </p>
-            <div className="grid grid-cols-3 gap-3">
+            <p className="text-xs font-semibold text-stone-400 uppercase tracking-widest mb-4 pb-3 border-b border-stone-100">Your impact</p>
+            <div className="grid grid-cols-3 gap-2">
               {[
-                { num: '143', label: 'Meals rescued',    delta: '↑ 3× last Saturday' },
-                { num: '7',   label: 'Pickups done',     delta: 'Top 12% this week'  },
-                { num: '4',   label: 'Partners thanked', delta: 'Via Claude drafts'  },
+                { num: '143', label: 'Meals rescued',    delta: '↑ 3×' },
+                { num: '7',   label: 'Pickups done',     delta: 'Top 12%' },
+                { num: '4',   label: 'Partners',         delta: 'Via Claude' },
               ].map(s => (
                 <div key={s.label} className="bg-stone-50 rounded-xl p-3 text-center">
-                  <p className="text-2xl font-bold text-stone-800" style={{ fontFamily: 'Georgia, serif' }}>{s.num}</p>
-                  <p className="text-xs text-stone-500 mt-1">{s.label}</p>
-                  <p className="text-xs text-green-600 font-medium mt-0.5">{s.delta}</p>
+                  <p className="text-xl font-bold text-stone-800">{s.num}</p>
+                  <p className="text-[10px] text-stone-500 mt-1">{s.label}</p>
+                  <p className="text-[10px] text-green-600 font-medium mt-0.5">{s.delta}</p>
                 </div>
               ))}
             </div>
           </div>
+        </div>
 
+        {/* RIGHT COLUMN — Listings */}
+        <div className="space-y-3">
+          <div className="flex items-center justify-between px-1">
+            <p className="text-xs font-semibold text-stone-400 uppercase tracking-widest">Open listings near you</p>
+            <span className="text-xs text-green-600 font-medium">{listings.filter(l => l.status === 'open').length} available</span>
+          </div>
+
+          {isLocked && (
+            <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-800 font-medium">
+              Account locked — {FLAG_THRESHOLD} failed verifications. Contact support to appeal.
+            </div>
+          )}
+          {!isLocked && flagCount > 0 && (
+            <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-800">
+              Warning: {flagCount}/{FLAG_THRESHOLD} verification failures. Account locks at {FLAG_THRESHOLD}.
+            </div>
+          )}
+
+          {listings.length === 0 && (
+            <p className="text-xs text-stone-400 text-center py-8">Loading listings…</p>
+          )}
+
+          {sortedListings.map(l => {
+            const isMyClaim = !!claimed[l.id]
+            const isClaimed = l.status === 'claimed'
+            const isCompleted = l.status === 'completed'
+            const distMi = volunteerLocation && l.lat && l.lng
+              ? haversineDistance(volunteerLocation.lat, volunteerLocation.lng, l.lat, l.lng)
+              : null
+            const mins = estimateMinutes(distMi, form.transport)
+            const photos = listingPhotos[l.id] || []
+            const result = listingResults[l.id]
+            const isVerifying = verifyingId === l.id
+
+            return (
+              <div key={l.id} className={`bg-white border rounded-2xl p-4 transition ${
+                isCompleted ? 'opacity-50 border-stone-100' :
+                isClaimed && !isMyClaim ? 'opacity-50 border-stone-100' :
+                isMyClaim ? 'border-green-300' :
+                'border-stone-200'
+              }`}>
+                {/* Header */}
+                <div className="flex items-start gap-3 mb-3">
+                  <div className="w-9 h-9 rounded-lg bg-stone-100 flex items-center justify-center text-lg flex-shrink-0">
+                    {FOOD_TYPES.find(t => t.id === l.foodType)?.emoji || '🍽️'}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-stone-800 truncate">{l.restaurantName}</p>
+                    <p className="text-xs text-stone-500 truncate">{l.address}</p>
+                  </div>
+                  {isCompleted && (
+                    <span className={`flex-shrink-0 text-[10px] font-semibold px-2 py-0.5 rounded-full border ${l.aiVerified ? 'bg-green-100 text-green-800 border-green-300' : 'bg-stone-100 text-stone-500 border-stone-200'}`}>
+                      {l.aiVerified ? 'AI Verified ✓' : 'Completed'}
+                    </span>
+                  )}
+                </div>
+
+                {/* Badges */}
+                <div className="flex flex-wrap gap-1.5 mb-3">
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-800 border border-green-200">{l.foodType}</span>
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200">{l.quantity} portions</span>
+                  {distMi !== null && (
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 border border-blue-200">{distMi.toFixed(1)} mi</span>
+                  )}
+                  {mins !== null && (
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 border border-purple-200">~{mins} min</span>
+                  )}
+                </div>
+
+                {/* Footer row */}
+                <div className="flex items-center justify-between">
+                  <p className="text-xs text-stone-400">
+                    Pickup <span className="text-stone-600">{formatTime(l.pickupStart)}–{formatTime(l.pickupEnd)}</span>
+                  </p>
+                  {isCompleted
+                    ? <span className="text-xs font-medium text-stone-400">Completed ✓</span>
+                    : isClaimed && !isMyClaim
+                      ? <span className="text-xs font-medium text-stone-400">Claimed</span>
+                      : isMyClaim
+                        ? <span className="text-xs font-medium text-green-600">Claimed by you ✓</span>
+                        : isLocked
+                          ? <span className="text-xs font-medium text-red-400">Account locked</span>
+                          : (
+                            <button onClick={() => handleClaim(l)}
+                              className="text-xs font-medium text-green-700 border border-green-600 px-3 py-1 rounded-full hover:bg-green-600 hover:text-white transition">
+                              Claim pickup
+                            </button>
+                          )
+                  }
+                </div>
+
+                {/* Expanded section for volunteer's own claimed listings */}
+                {isMyClaim && !isCompleted && (
+                  <div className="mt-3 pt-3 border-t border-stone-100 space-y-3">
+                    {/* Pickup / drop-off info */}
+                    {l.dropOffName && (
+                      <div className="space-y-2">
+                        <div className="flex items-start gap-2">
+                          <span className="text-[11px] text-stone-400 w-14 flex-shrink-0 pt-0.5">Pick up</span>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs text-stone-700 leading-snug">{l.address}</p>
+                            <a href={`https://maps.google.com/?q=${encodeURIComponent(l.address)}`} target="_blank" rel="noopener noreferrer" className="text-[11px] text-green-600 hover:underline">Open in Maps ↗</a>
+                          </div>
+                        </div>
+                        <div className="flex items-start gap-2">
+                          <span className="text-[11px] text-stone-400 w-14 flex-shrink-0 pt-0.5">Drop off</span>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs font-medium text-stone-700">{l.dropOffName}</p>
+                            <p className="text-xs text-stone-500 leading-snug">{l.dropOffAddress}</p>
+                            <a href={`https://maps.google.com/?q=${encodeURIComponent(l.dropOffAddress)}`} target="_blank" rel="noopener noreferrer" className="text-[11px] text-green-600 hover:underline">Open in Maps ↗</a>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Photo upload — only if no result yet */}
+                    {!result?.submitted && (
+                      <div>
+                        <p className="text-xs font-medium text-stone-600 mb-2">Upload delivery photo</p>
+                        {photos.length === 0 ? (
+                          <label className="block border-2 border-dashed border-stone-200 rounded-xl p-4 text-center cursor-pointer hover:bg-stone-50 hover:border-green-400 transition">
+                            <input type="file" accept="image/*" onChange={e => handleListingFiles(l.id, e)} className="hidden" />
+                            <div className="w-7 h-7 bg-stone-100 rounded-full flex items-center justify-center mx-auto mb-1.5 text-stone-400 text-xs">↑</div>
+                            <p className="text-xs text-stone-500">Tap to add photo</p>
+                          </label>
+                        ) : (
+                          <>
+                            <div className="grid grid-cols-4 gap-1.5 mb-2">
+                              {photos.map((f, i) => (
+                                <div key={i} className="aspect-square rounded-lg overflow-hidden border border-stone-200 relative">
+                                  <img src={URL.createObjectURL(f)} alt="preview" className="w-full h-full object-cover" />
+                                  <button onClick={() => removeListingPhoto(l.id, i)} className="absolute top-0.5 right-0.5 w-4 h-4 bg-black/50 text-white rounded-full text-xs flex items-center justify-center">✕</button>
+                                </div>
+                              ))}
+                            </div>
+                            <button
+                              onClick={() => handleVerifyAndSubmit(l)}
+                              disabled={isVerifying}
+                              className="w-full py-2 border border-green-600 text-green-700 rounded-xl text-xs font-medium hover:bg-green-50 transition disabled:opacity-50"
+                            >
+                              {isVerifying ? 'Uploading & verifying…' : 'Submit photo →'}
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Verification result + Mark as delivered */}
+                    {result?.submitted && (
+                      <div className="space-y-2">
+                        <div className={`p-3 rounded-xl text-xs leading-relaxed border ${result.ok ? 'bg-green-50 border-green-200 text-green-800' : 'bg-red-50 border-red-200 text-red-800'}`}>
+                          {result.ok ? '✓' : '✗'} {result.text}
+                        </div>
+                        <button
+                          onClick={() => handleMarkDelivered(l)}
+                          className="w-full py-2.5 bg-green-600 text-white rounded-xl text-xs font-semibold hover:bg-green-700 transition-colors"
+                        >
+                          Mark as delivered ✓
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )
+          })}
         </div>
       </div>
     </div>
